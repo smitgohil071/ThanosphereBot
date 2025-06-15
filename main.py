@@ -1,102 +1,90 @@
 import logging
-import asyncio
-import pytz
-from datetime import datetime
 import requests
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-)
+import asyncio
+from pytz import timezone
+from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from dotenv import load_dotenv
-import os
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# Load environment variables
-load_dotenv()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+# Constants
+TELEGRAM_BOT_TOKEN = '8165847651:AAFV2hSyWVy2pqcCm60yOisZU3Qs1w67e0E'
+WEATHER_API_KEY = '6b33fb715ddedc97349b1a50057cfa73'
+DEFAULT_TIMEZONE = timezone('Asia/Kolkata')
 
-# Set timezone to India
-india_timezone = pytz.timezone("Asia/Kolkata")
-
-# Logging
+# Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# User city mapping
-user_city_map = {}
+# Global storage for user cities
+user_cities = {}
 
-# Get weather data
+# Weather fetcher
 def get_weather(city: str) -> str:
+    url = f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric'
     try:
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric"
-        response = requests.get(url).json()
+        res = requests.get(url).json()
 
-        if response.get("cod") != 200:
-            return "❌ City not found. Please enter a valid city name."
+        if res.get("cod") != 200:
+            return f"❌ Could not find weather for '{city}'. Please try again."
 
-        data = response
-        main = data['main']
-        weather = data['weather'][0]
-        wind = data['wind']
-        sys = data['sys']
+        temp = res['main']['temp']
+        feels_like = res['main']['feels_like']
+        temp_min = res['main']['temp_min']
+        temp_max = res['main']['temp_max']
+        humidity = res['main']['humidity']
+        pressure = res['main']['pressure']
+        wind = res['wind']['speed']
+        condition = res['weather'][0]['description'].title()
 
-        sunrise = datetime.utcfromtimestamp(sys['sunrise']).replace(tzinfo=pytz.utc).astimezone(india_timezone).strftime('%I:%M %p')
-        sunset = datetime.utcfromtimestamp(sys['sunset']).replace(tzinfo=pytz.utc).astimezone(india_timezone).strftime('%I:%M %p')
+        # Convert sunrise/sunset to IST
+        sunrise = datetime.fromtimestamp(res['sys']['sunrise'], tz=DEFAULT_TIMEZONE).strftime('%I:%M %p')
+        sunset = datetime.fromtimestamp(res['sys']['sunset'], tz=DEFAULT_TIMEZONE).strftime('%I:%M %p')
 
-        return (
-            f"📍 {data['name']}, {sys['country']}\n"
-            f"🌡 Temp: {main['temp']}°C (Feels like {main['feels_like']}°C)\n"
-            f"🔻 Min: {main['temp_min']}°C | 🔺 Max: {main['temp_max']}°C\n"
-            f"💧 Humidity: {main['humidity']}%\n"
-            f"🌬 Wind: {wind['speed']} m/s\n"
-            f"🌤 Weather: {weather['description'].title()}\n"
-            f"🌅 Sunrise: {sunrise} | 🌇 Sunset: {sunset}"
-        )
-    except Exception:
-        return "⚠️ Sorry, couldn't fetch weather data right now."
+        return (f"📍 *{res['name']}, {res['sys']['country']}*\n"
+                f"🌡 *{temp}°C* (Feels like {feels_like}°C)\n"
+                f"🔻 Min: {temp_min}°C | 🔺 Max: {temp_max}°C\n"
+                f"💧 Humidity: {humidity}% | 🔵 Pressure: {pressure} hPa\n"
+                f"💨 Wind: {wind} m/s | ☁️ Condition: {condition}\n"
+                f"🌅 Sunrise: {sunrise} | 🌇 Sunset: {sunset}")
+    except Exception as e:
+        logger.error(f"Weather API error: {e}")
+        return "⚠️ Could not retrieve weather. Please try again later."
 
-# /start handler
+# Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    await update.message.reply_text(
-        f"👋 Hello {user.first_name}, I’m ThanosphereBot 🌦\n\n"
-        f"Just send me your city name to get the weather forecast!\n"
-        f"You’ll also get daily updates at 8 AM IST."
-    )
+    await update.message.reply_text(f"👋 Hello {user.first_name}! Send me a city name and I'll give you the weather updates!")
 
-# Handle city name input
 async def handle_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     city = update.message.text.strip()
-    user_city_map[user_id] = city
 
-    forecast = get_weather(city)
-    await update.message.reply_text(forecast)
+    user_cities[chat_id] = city
+    weather_info = get_weather(city)
+    await update.message.reply_markdown(weather_info)
 
-# Daily forecast job
-async def daily_forecast(context: ContextTypes.DEFAULT_TYPE):
-    for user_id, city in user_city_map.items():
+async def daily_weather(context: ContextTypes.DEFAULT_TYPE):
+    for chat_id, city in user_cities.items():
+        weather_info = get_weather(city)
         try:
-            forecast = get_weather(city)
-            await context.bot.send_message(chat_id=user_id, text=f"📅 Daily Forecast:\n{forecast}")
-        except Exception:
-            continue  # ignore failures silently
+            await context.bot.send_message(chat_id=chat_id, text=weather_info, parse_mode='Markdown')
+        except Exception as e:
+            logger.warning(f"Failed to send message to {chat_id}: {e}")
 
-# Main entry
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city))
 
-    # Schedule 8 AM daily update (Asia/Kolkata time)
-    scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
-    scheduler.add_job(daily_forecast, CronTrigger(hour=8, minute=0), args=[app.bot])
+    # Daily job scheduler
+    scheduler = AsyncIOScheduler(timezone=DEFAULT_TIMEZONE)
+    scheduler.add_job(daily_weather, 'cron', hour=7, minute=0, args=[app.bot])
     scheduler.start()
 
-    logger.info("✅ Bot is running...")
+    print("✅ Bot started.")
     await app.run_polling()
 
 if __name__ == "__main__":
