@@ -1,3 +1,4 @@
+import os
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,22 +11,21 @@ import requests
 import datetime
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
-from typing import Final, Dict
+from typing import Dict
 
 # Developer Info
 author = "Smit Gohil"
 botname = "Thanosphere Weather Bot"
 version = "1.0.2"
 
-# API Keys
-TELEGRAM_BOT_TOKEN: Final = "8165847651:AAFV2hSyWVy2pqcCm60yOisZU3Qs1w67e0E"
-WEATHER_API_KEY: Final = "6b33fb715ddedc97349b1a50057cfa73"
-GEMINI_API_KEY: Final = "AIzaSyDlN2UBt6i8-uhJkSbL0XEKyU9IhKmZOoU"
+# Load API Keys from Environment
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+WEATHER_API_KEY = os.environ["WEATHER_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 user_subscriptions: Dict[int, str] = {}
 
 # Logging
-
 def log_message(update: Update):
     user = update.effective_user
     username = user.username or user.first_name or "UnknownUser"
@@ -46,7 +46,6 @@ def get_weather(city):
     sys = data["sys"]
     weather = data["weather"][0]
 
-    # Convert to IST
     local_tz = pytz.timezone("Asia/Kolkata")
     sunrise = datetime.datetime.fromtimestamp(sys["sunrise"], pytz.UTC).astimezone(local_tz).strftime('%H:%M:%S')
     sunset = datetime.datetime.fromtimestamp(sys["sunset"], pytz.UTC).astimezone(local_tz).strftime('%H:%M:%S')
@@ -138,7 +137,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     if user_id not in user_subscriptions:
-        user_subscriptions[user_id] = city  # Auto-subscribe
+        user_subscriptions[user_id] = city
     report = get_weather(city)
     if report:
         await update.message.reply_text(report)
