@@ -1,126 +1,100 @@
-from flask import Flask, request
+import threading
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
-    Application, ApplicationBuilder, CommandHandler,
-    MessageHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
-import datetime
+from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler
-from typing import Final, Dict
-import os
-import asyncio
+import datetime
 
-# ==== Configuration ====
-BOT_TOKEN: Final = "8165847651:AAFV2hSyWVy2pqcCm60yOisZU3Qs1w67e0E"
-WEATHER_API_KEY: Final = "6b33fb715ddedc97349b1a50057cfa73"
-RENDER_EXTERNAL_URL: Final = "https://your-app-name.onrender.com"  # 🔁 Replace this with your real Render URL
-WEBHOOK_PATH: Final = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL: Final = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+# 🔐 Keys — ensure these are set via env vars or hardcoded here
+TELEGRAM_BOT_TOKEN = "8165847651:AAFV2hSyWVy2pqcCm60yOisZU3Qs1w67e0E"
+WEATHER_API_KEY = "6b33fb715ddedc97349b1a50057cfa73"
 
-PORT = int(os.environ.get("PORT", 10000))
-user_subscriptions: Dict[int, str] = {}
+# Store daily-subscription preferences
+user_subscriptions = {}
 
-# ==== Flask App ====
+# —————— Flask app ——————
 app = Flask(__name__)
-telegram_app: Application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# ==== Weather Logic ====
+@app.route("/", methods=["GET", "HEAD"])
+def index():
+    return "Bot is running!", 200
+
+# —————— Telegram handlers ——————
 def get_weather(city):
-    try:
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric"
-        res = requests.get(url)
-        if res.status_code != 200:
-            return None
-        data = res.json()
-        main = data["main"]
-        weather = data["weather"][0]
-        wind = data["wind"]
-        sys = data["sys"]
-
-        sunrise = datetime.datetime.fromtimestamp(sys["sunrise"], pytz.UTC).astimezone(
-            pytz.timezone("Asia/Kolkata")).strftime('%H:%M:%S')
-        sunset = datetime.datetime.fromtimestamp(sys["sunset"], pytz.UTC).astimezone(
-            pytz.timezone("Asia/Kolkata")).strftime('%H:%M:%S')
-
-        return (
-            f"📍 {data['name']}, {sys['country']}\n"
-            f"🌡 Temp: {main['temp']}°C (Feels like {main['feels_like']}°C)\n"
-            f"🔻 Min: {main['temp_min']}°C | 🔺 Max: {main['temp_max']}°C\n"
-            f"💧 Humidity: {main['humidity']}%\n"
-            f"🌬 Wind: {wind['speed']} m/s\n"
-            f"🌅 Sunrise: {sunrise} | 🌇 Sunset: {sunset}\n"
-            f"🌁 Visibility: {data.get('visibility', 0) / 1000} km\n"
-            f"🌀 Condition: {weather['main']} - {weather['description'].title()}"
-        )
-    except:
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric"
+    res = requests.get(url)
+    if res.status_code != 200:
         return None
-
-# ==== Telegram Command Handlers ====
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! Send a city name or use /subscribe <city> to get daily weather ☀️")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "/start - Start\n"
-        "/subscribe <city> - Daily updates\n"
-        "/help - Show help"
+    d = res.json()
+    main = d["main"]; wind = d["wind"]; sys = d["sys"]; w = d["weather"][0]
+    tz = pytz.timezone("Asia/Kolkata")
+    sunrise = datetime.datetime.fromtimestamp(sys["sunrise"], pytz.UTC).astimezone(tz).strftime("%H:%M:%S")
+    sunset = datetime.datetime.fromtimestamp(sys["sunset"], pytz.UTC).astimezone(tz).strftime("%H:%M:%S")
+    return (
+        f"📍 {d['name']}, {sys['country']}\n"
+        f"🌡 Temp: {main['temp']}°C (Feels like {main['feels_like']}°C)\n"
+        f"🔻 Min: {main['temp_min']}°C | 🔺 Max: {main['temp_max']}°C\n"
+        f"💧 Humidity: {main['humidity']}%\n"
+        f"🌬 Wind: {wind['speed']} m/s\n"
+        f"🌅 Sunrise: {sunrise} | 🌇 Sunset: {sunset}\n"
+        f"📋 Condition: {w['main']} - {w['description'].title()}"
     )
 
-async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🌦 Welcome! Send a city name to get weather.")
+
+async def subscribe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
         await update.message.reply_text("Usage: /subscribe <city>")
         return
-    city = " ".join(context.args)
-    user_id = update.effective_user.id
-    user_subscriptions[user_id] = city
-    await update.message.reply_text(f"🔔 Subscribed to daily updates for {city}.")
+    city = " ".join(ctx.args)
+    user_subscriptions[update.effective_user.id] = city
+    await update.message.reply_text(f"✅ Subscribed to daily updates for {city}")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    city = update.message.text.strip()
-    user_id = update.effective_user.id
-    user_subscriptions[user_id] = city
-    report = get_weather(city)
+async def help_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("/start\n/subscribe <city>")
+
+async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    report = get_weather(update.message.text.strip())
     if report:
         await update.message.reply_text(report)
+        user_subscriptions[update.effective_user.id] = update.message.text.strip()
     else:
         await update.message.reply_text("❌ Couldn't find that city.")
 
-# ==== Daily Weather Update Scheduler ====
-scheduler = BackgroundScheduler()
+# —————— Scheduler ——————
+def send_daily():
+    for uid, city in user_subscriptions.items():
+        rpt = get_weather(city)
+        if rpt:
+            try:
+                app_bot.bot.send_message(chat_id=uid, text=f"☀️ Daily Update:\n{rpt}")
+            except:
+                pass
 
-def send_daily_updates():
-    for user_id, city in user_subscriptions.items():
-        report = get_weather(city)
-        if report:
-            asyncio.run(telegram_app.bot.send_message(chat_id=user_id, text=f"☀️ Daily Weather:\n{report}"))
+sched = BackgroundScheduler()
+sched.add_job(send_daily, "cron", hour=8, timezone="Asia/Kolkata")
+sched.start()
 
-scheduler.add_job(send_daily_updates, "cron", hour=8, timezone="Asia/Kolkata")
-scheduler.start()
+# —————— Telegram bot runner ——————
+def run_bot():
+    global app_bot
+    app_bot = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("subscribe", subscribe))
+    app_bot.add_handler(CommandHandler("help", help_command))
+    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app_bot.run_polling()
 
-# ==== Flask Webhook Route ====
-@app.route(WEBHOOK_PATH, methods=["POST"])
-async def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    await telegram_app.process_update(update)
-    return "OK"
-
-@app.route("/", methods=["GET"])
-def root():
-    return "✅ Thanosphere Bot is LIVE with Webhook!"
-
-# ==== Launch ====
-async def main():
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("help", help_command))
-    telegram_app.add_handler(CommandHandler("subscribe", subscribe))
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    await telegram_app.bot.set_webhook(WEBHOOK_URL)
-    print("🔗 Webhook set!")
-
+# —————— Start both ——————
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    asyncio.run(main())
-    app.run(host="0.0.0.0", port=PORT)
+    threading.Thread(target=run_bot).start()
+    app.run(host="0.0.0.0", port=10000)
