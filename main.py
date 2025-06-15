@@ -1,91 +1,96 @@
-import logging
-import requests
 import asyncio
-from pytz import timezone
+import logging
+import pytz
 from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    ContextTypes, filters
+)
+import requests
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Constants
+# Your bot token and weather API key
 TELEGRAM_BOT_TOKEN = '8165847651:AAFV2hSyWVy2pqcCm60yOisZU3Qs1w67e0E'
 WEATHER_API_KEY = '6b33fb715ddedc97349b1a50057cfa73'
-DEFAULT_TIMEZONE = timezone('Asia/Kolkata')
 
-# Logger
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Logging for console
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-# Global storage for user cities
-user_cities = {}
+# Get weather data
+def get_weather(city):
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric"
+    response = requests.get(url)
+    if response.status_code != 200:
+        return None
 
-# Weather fetcher
-def get_weather(city: str) -> str:
-    url = f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric'
-    try:
-        res = requests.get(url).json()
+    data = response.json()
+    temp = data['main']['temp']
+    feels_like = data['main']['feels_like']
+    min_temp = data['main']['temp_min']
+    max_temp = data['main']['temp_max']
+    humidity = data['main']['humidity']
+    wind = data['wind']['speed']
+    sunrise_utc = datetime.utcfromtimestamp(data['sys']['sunrise'])
+    sunset_utc = datetime.utcfromtimestamp(data['sys']['sunset'])
 
-        if res.get("cod") != 200:
-            return f"❌ Could not find weather for '{city}'. Please try again."
+    ist = pytz.timezone('Asia/Kolkata')
+    sunrise_ist = sunrise_utc.replace(tzinfo=pytz.utc).astimezone(ist).strftime('%H:%M:%S')
+    sunset_ist = sunset_utc.replace(tzinfo=pytz.utc).astimezone(ist).strftime('%H:%M:%S')
 
-        temp = res['main']['temp']
-        feels_like = res['main']['feels_like']
-        temp_min = res['main']['temp_min']
-        temp_max = res['main']['temp_max']
-        humidity = res['main']['humidity']
-        pressure = res['main']['pressure']
-        wind = res['wind']['speed']
-        condition = res['weather'][0]['description'].title()
+    description = data['weather'][0]['description'].capitalize()
+    city_name = data['name']
+    country = data['sys']['country']
 
-        # Convert sunrise/sunset to IST
-        sunrise = datetime.fromtimestamp(res['sys']['sunrise'], tz=DEFAULT_TIMEZONE).strftime('%I:%M %p')
-        sunset = datetime.fromtimestamp(res['sys']['sunset'], tz=DEFAULT_TIMEZONE).strftime('%I:%M %p')
+    return (
+        f"📍 {city_name}, {country}\n"
+        f"🌡 Temp: {temp}°C (Feels like {feels_like}°C)\n"
+        f"🔻 Min: {min_temp}°C | 🔺 Max: {max_temp}°C\n"
+        f"💧 Humidity: {humidity}%\n"
+        f"🌬 Wind: {wind} m/s\n"
+        f"🌅 Sunrise: {sunrise_ist} IST\n"
+        f"🌇 Sunset: {sunset_ist} IST\n"
+        f"📋 Condition: {description}"
+    )
 
-        return (f"📍 *{res['name']}, {res['sys']['country']}*\n"
-                f"🌡 *{temp}°C* (Feels like {feels_like}°C)\n"
-                f"🔻 Min: {temp_min}°C | 🔺 Max: {temp_max}°C\n"
-                f"💧 Humidity: {humidity}% | 🔵 Pressure: {pressure} hPa\n"
-                f"💨 Wind: {wind} m/s | ☁️ Condition: {condition}\n"
-                f"🌅 Sunrise: {sunrise} | 🌇 Sunset: {sunset}")
-    except Exception as e:
-        logger.error(f"Weather API error: {e}")
-        return "⚠️ Could not retrieve weather. Please try again later."
-
-# Commands
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    await update.message.reply_text(f"👋 Hello {user.first_name}! Send me a city name and I'll give you the weather updates!")
+    await update.message.reply_text(
+        "🌦 Welcome to *Thanosphere Weather Bot*!\n\n"
+        "Send me your city name to get live weather updates instantly!",
+        parse_mode='Markdown'
+    )
 
-async def handle_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+# Help command
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❓ Just type your city name to get the latest weather info!")
+
+# Handle city name text
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     city = update.message.text.strip()
+    weather = get_weather(city)
+    if weather:
+        await update.message.reply_text(weather)
+    else:
+        await update.message.reply_text("⚠️ Couldn't find weather for that city. Please try another.")
 
-    user_cities[chat_id] = city
-    weather_info = get_weather(city)
-    await update.message.reply_markdown(weather_info)
-
-async def daily_weather(context: ContextTypes.DEFAULT_TYPE):
-    for chat_id, city in user_cities.items():
-        weather_info = get_weather(city)
-        try:
-            await context.bot.send_message(chat_id=chat_id, text=weather_info, parse_mode='Markdown')
-        except Exception as e:
-            logger.warning(f"Failed to send message to {chat_id}: {e}")
-
+# Run bot
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city))
-
-    # Daily job scheduler
-    scheduler = AsyncIOScheduler(timezone=DEFAULT_TIMEZONE)
-    scheduler.add_job(daily_weather, 'cron', hour=7, minute=0, args=[app.bot])
+    # Scheduler to send auto updates if needed
+    scheduler = AsyncIOScheduler()
     scheduler.start()
 
-    print("✅ Bot started.")
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("✅ Bot started...")
     await app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
