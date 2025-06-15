@@ -1,14 +1,7 @@
 services:
   - type: web
-    name: thanospherebot
+    name: thanosphere-weather-bot
     env: python
-    buildCommand: ""
+    plan: free
+    buildCommand: pip install -r requirements.txt
     startCommand: python main.py
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        value: 8165847651:AAFV2hSyWVy2pqcCm60yOisZU3Qs1w67e0E
-      - key: WEATHER_API_KEY
-        value: 6b33fb715ddedc97349b1a50057cfa73
-      - key: GEMINI_API_KEY
-        value: AIzaSyDlN2UBt6i8-uhJkSbL0XEKyU9IhKmZOoU
-  
