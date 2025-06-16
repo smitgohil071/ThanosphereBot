@@ -1,9 +1,15 @@
 services:
   - type: web
-    name: thanosphere-weather-bot
-    runtime: python
+    name: thanossphere-weather-bot
+    env: python
+    region: oregon  # or choose closest to your users
+    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: bash start.sh
     envVars:
-      - key: PORT
-        value: 8080
+      - key: TELEGRAM_BOT_TOKEN
+        value: your_telegram_bot_token_here
+      - key: WEATHER_API_KEY
+        value: your_openweather_api_key_here
+      - key: WEBHOOK_URL
+        value: https://your-app-name.onrender.com/webhook
